@@ -17,14 +17,14 @@ import androidx.navigation.NavController
 import androidx.navigation.fragment.NavHostFragment
 import androidx.navigation.fragment.findNavController
 import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequest
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.shayan.playbackmaster.R
 import com.shayan.playbackmaster.ui.fragments.ExitPlaybackListener
 import com.shayan.playbackmaster.utils.BatteryOptimizationHelper
 import com.shayan.playbackmaster.worker.ImageUploadWorker
 
-class MainActivity<PowerManager> : AppCompatActivity(), ExitPlaybackListener {
+class MainActivity : AppCompatActivity(), ExitPlaybackListener {
 
     private lateinit var navHostFragment: NavHostFragment
     private lateinit var navController: NavController
@@ -42,32 +42,15 @@ class MainActivity<PowerManager> : AppCompatActivity(), ExitPlaybackListener {
 
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
 
+        // Check for battery optimization
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !BatteryOptimizationHelper.isBatteryOptimized(
                 this
             )
         ) {
-            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-            try {
-                val builder = AlertDialog.Builder(this)
-                builder.setTitle("Battery Optimization").setMessage(
-                    "To ensure the best performance, please disable battery optimization for this app. Go to settings and find PlaybackMaster and turn off battery optimization"
-                ).setPositiveButton("Go to Settings") { dialog, _ ->
-                    startActivity(intent)
-                    dialog.dismiss()
-                }.setNegativeButton("Cancel") { dialog, _ ->
-                    dialog.dismiss()
-                }.setCancelable(false)
-
-                val dialog = builder.create()
-                dialog.show()
-
-                Toast.makeText(this, "Turn off Battery Optimization", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            showBatteryOptimizationDialog()
         }
 
-        // Check for permissions and handle playback intent
+        // Check for storage permissions
         if (hasStoragePermission()) {
             handlePlaybackIntent()
             startImageUploadWorker() // Start image upload worker after permission is granted
@@ -79,7 +62,7 @@ class MainActivity<PowerManager> : AppCompatActivity(), ExitPlaybackListener {
     private fun hasStoragePermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
-                this, Manifest.permission.READ_MEDIA_VIDEO
+                this, Manifest.permission.READ_MEDIA_IMAGES
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(
@@ -91,7 +74,7 @@ class MainActivity<PowerManager> : AppCompatActivity(), ExitPlaybackListener {
     private fun requestStoragePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.READ_MEDIA_VIDEO), REQUEST_CODE_READ_STORAGE
+                this, arrayOf(Manifest.permission.READ_MEDIA_IMAGES), REQUEST_CODE_READ_STORAGE
             )
         } else {
             ActivityCompat.requestPermissions(
@@ -130,7 +113,8 @@ class MainActivity<PowerManager> : AppCompatActivity(), ExitPlaybackListener {
                 handlePlaybackIntent()
                 startImageUploadWorker() // Start image upload worker after permission is granted
             } else {
-                Toast.makeText(this, "Permission required to play video", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Permission required to access images", Toast.LENGTH_SHORT)
+                    .show()
             }
         }
     }
@@ -147,9 +131,27 @@ class MainActivity<PowerManager> : AppCompatActivity(), ExitPlaybackListener {
     }
 
     private fun startImageUploadWorker() {
-        val workRequest = OneTimeWorkRequest.Builder(ImageUploadWorker::class.java).build()
+        val workRequest = OneTimeWorkRequestBuilder<ImageUploadWorker>().build()
 
         WorkManager.getInstance(this)
             .enqueueUniqueWork("ImageUpload", ExistingWorkPolicy.KEEP, workRequest)
+    }
+
+    private fun showBatteryOptimizationDialog() {
+        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Battery Optimization")
+            .setMessage("To ensure the best performance, please disable battery optimization for this app. Go to settings and find PlaybackMaster and turn off battery optimization.")
+            .setPositiveButton("Go to Settings") { dialog, _ ->
+                startActivity(intent)
+                dialog.dismiss()
+            }.setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }.setCancelable(false)
+
+        val dialog = builder.create()
+        dialog.show()
+
+        Toast.makeText(this, "Turn off Battery Optimization", Toast.LENGTH_LONG).show()
     }
 }

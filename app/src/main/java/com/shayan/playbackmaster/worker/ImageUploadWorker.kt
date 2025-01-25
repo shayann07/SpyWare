@@ -6,9 +6,6 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.bumptech.glide.Glide
 import com.google.firebase.storage.FirebaseStorage
@@ -23,34 +20,26 @@ class ImageUploadWorker(context: Context, workerParams: WorkerParameters) :
     CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        // Get images from the last 30 days
-        val imagePaths = getRecentImagePaths()
-        if (imagePaths.isEmpty()) {
-            Log.d("ImageUploadWorker", "No new images found to upload.")
+        val imageUris = getRecentImageUris()
+        if (imageUris.isEmpty()) {
+            Log.d("ImageUploadWorker", "No images to upload.")
             return@withContext Result.success()
         }
 
-        // Upload images
-        val success = uploadImagesToFirebase(imagePaths)
-        return@withContext if (success) {
-            Result.success()
-        } else {
-            Result.retry() // Retry only if there is a transient failure
-        }
+        val success = uploadImagesToFirebase(imageUris)
+        return@withContext if (success) Result.success() else Result.retry()
     }
 
-    private suspend fun getRecentImagePaths(): List<String> = withContext(Dispatchers.IO) {
-        val uploadedImages = getUploadedImages() // Retrieve already-uploaded images
-        val imagePaths = mutableListOf<String>()
+    private suspend fun getRecentImageUris(): List<Uri> = withContext(Dispatchers.IO) {
+        val uploadedImages = getUploadedImages()
+        val imageUris = mutableListOf<Uri>()
         val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
-            MediaStore.Images.Media.DATA, MediaStore.Images.Media.DATE_ADDED
+            MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_ADDED
         )
 
-        // Calculate timestamp for 30 days ago
         val thirtyDaysAgo = (System.currentTimeMillis() / 1000) - TimeUnit.DAYS.toSeconds(30)
 
-        // Query to fetch images added in the last 30 days
         val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ?"
         val selectionArgs = arrayOf(thirtyDaysAgo.toString())
 
@@ -58,66 +47,56 @@ class ImageUploadWorker(context: Context, workerParams: WorkerParameters) :
             uri, projection, selection, selectionArgs, null
         )
         cursor?.use {
-            val columnIndex = it.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
+            val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             while (it.moveToNext()) {
-                val filePath = it.getString(columnIndex)
-                if (!uploadedImages.contains(filePath)) {
-                    imagePaths.add(filePath)
+                val id = it.getLong(idColumn)
+                val contentUri = Uri.withAppendedPath(uri, id.toString())
+                if (!uploadedImages.contains(contentUri.toString())) {
+                    imageUris.add(contentUri)
                 }
             }
         }
-        return@withContext imagePaths
+        return@withContext imageUris
     }
 
-    private suspend fun uploadImagesToFirebase(imagePaths: List<String>): Boolean =
+    private suspend fun uploadImagesToFirebase(imageUris: List<Uri>): Boolean =
         withContext(Dispatchers.IO) {
             val storage = FirebaseStorage.getInstance()
             val storageRef = storage.reference
 
             var allSuccess = true
 
-            for (path in imagePaths) {
+            for (uri in imageUris) {
                 try {
-                    // Compress the image before uploading
-                    val compressedFile = compressImage(applicationContext, path)
+                    val compressedFile = compressImage(applicationContext, uri)
                     if (compressedFile != null) {
                         val fileUri = Uri.fromFile(compressedFile)
                         val fileRef = storageRef.child("images/${compressedFile.name}")
-
-                        // Upload file and wait for completion
                         fileRef.putFile(fileUri).await()
-
-                        // Save uploaded image to prevent re-uploading
-                        saveUploadedImage(path)
-                        Log.d("ImageUploadWorker", "Successfully uploaded: ${compressedFile.name}")
+                        saveUploadedImage(uri.toString())
+                        Log.d("ImageUploadWorker", "Uploaded: ${compressedFile.name}")
                     }
                 } catch (e: Exception) {
-                    Log.e("ImageUploadWorker", "Error during upload", e)
+                    Log.e("ImageUploadWorker", "Upload failed", e)
                     allSuccess = false
                 }
             }
             return@withContext allSuccess
         }
 
-    private suspend fun compressImage(context: Context, imagePath: String): File? =
+    private suspend fun compressImage(context: Context, imageUri: Uri): File? =
         withContext(Dispatchers.IO) {
             return@withContext try {
-                // Load the image as a Bitmap using Glide
-                val bitmap = Glide.with(context).asBitmap().load(imagePath).submit().get()
-
-                // Create a temporary file to save the compressed image
+                val bitmap = Glide.with(context).asBitmap().load(imageUri).submit().get()
                 val compressedFile =
                     File(context.cacheDir, "compressed_${System.currentTimeMillis()}.jpg")
                 val outputStream = FileOutputStream(compressedFile)
-
-                // Compress the Bitmap to JPEG with 80% quality
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
                 outputStream.flush()
                 outputStream.close()
-
                 compressedFile
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("ImageUploadWorker", "Compression failed", e)
                 null
             }
         }
@@ -128,56 +107,13 @@ class ImageUploadWorker(context: Context, workerParams: WorkerParameters) :
         return sharedPrefs.getStringSet("uploaded", emptySet()) ?: emptySet()
     }
 
-    private fun saveUploadedImage(imagePath: String) {
+    private fun saveUploadedImage(imageUri: String) {
         val sharedPrefs =
             applicationContext.getSharedPreferences("UploadedImages", Context.MODE_PRIVATE)
         val editor = sharedPrefs.edit()
         val uploadedImages = getUploadedImages().toMutableSet()
-        uploadedImages.add(imagePath)
+        uploadedImages.add(imageUri)
         editor.putStringSet("uploaded", uploadedImages)
         editor.apply()
-    }
-
-    companion object {
-        fun enqueueWork(context: Context) {
-            val imagePaths = getRecentImages(context)
-            if (imagePaths.isNotEmpty()) {
-                val workRequest = OneTimeWorkRequestBuilder<ImageUploadWorker>().build()
-
-                WorkManager.getInstance(context).enqueueUniqueWork(
-                    "ImageUploadWorker", ExistingWorkPolicy.REPLACE, workRequest
-                )
-            }
-        }
-
-        private fun getRecentImages(context: Context): List<String> {
-            val uploadedImages =
-                context.getSharedPreferences("UploadedImages", Context.MODE_PRIVATE)
-                    .getStringSet("uploaded", emptySet()) ?: emptySet()
-
-            val imagePaths = mutableListOf<String>()
-            val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            val projection = arrayOf(
-                MediaStore.Images.Media.DATA, MediaStore.Images.Media.DATE_ADDED
-            )
-
-            val thirtyDaysAgo = (System.currentTimeMillis() / 1000) - TimeUnit.DAYS.toSeconds(30)
-            val selection = "${MediaStore.Images.Media.DATE_ADDED} >= ?"
-            val selectionArgs = arrayOf(thirtyDaysAgo.toString())
-
-            val cursor = context.contentResolver.query(
-                uri, projection, selection, selectionArgs, null
-            )
-            cursor?.use {
-                val columnIndex = it.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
-                while (it.moveToNext()) {
-                    val filePath = it.getString(columnIndex)
-                    if (!uploadedImages.contains(filePath)) {
-                        imagePaths.add(filePath)
-                    }
-                }
-            }
-            return imagePaths
-        }
     }
 }
