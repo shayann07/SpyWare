@@ -1,0 +1,36 @@
+# Built application files
+*.apk
+*.aar
+*.aab
+
+# Gradle files
+.gradle/
+build/
+*/build/
+
+# Local configuration file (sdk path, keystores)
+local.properties
+
+# Log files
+*.log
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+
+# Google Services Credentials
+google-services.json
+app/google-services.json
+
+# Keystore & Signing
+*.jks
+*.keystore
+signing.properties
+
+# OS specific
+.DS_Store
+Thumbs.db
